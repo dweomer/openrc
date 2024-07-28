@@ -6,7 +6,8 @@ project('OpenRC', 'c',
     'prefix=/usr',
     'warning_level=3',
     ],
-  meson_version : '>=0.53.2')
+  meson_version : '>=0.61.0'
+)
 
 cc = meson.get_compiler('c')
 fs = import('fs')
@@ -151,6 +152,7 @@ cc_warning_flags_test = [
   '-Wdeclaration-after-statement',
   '-Wformat=2',
   '-Winline',
+  '-Wmismatched-dealloc',
   '-Wmissing-declarations',
   '-Wmissing-format-attribute',
   '-Wmissing-noreturn',
@@ -207,13 +209,36 @@ subdir('etc')
 subdir('init.d')
 subdir('local.d')
 subdir('man')
-subdir('pkgconfig')
 subdir('sh')
 subdir('src')
 subdir('support')
 subdir('sysctl.d')
 subdir('test')
 subdir('zsh-completion')
+
+if get_option('pkgconfig')
+  pkg = import('pkgconfig')
+
+  einfo_pkgconf = pkg.generate(
+    name : 'einfo',
+    description : 'Pretty console informational display',
+    version : meson.project_version(),
+    libraries : libeinfo,
+    subdirs : ['einfo'],
+  )
+
+  openrc_pkgconf = pkg.generate(
+    name : 'OpenRC',
+    filebase : 'openrc',
+    description : 'Universal init system',
+    version : meson.project_version(),
+    libraries : librc,
+    subdirs : ['openrc'],
+    variables: {
+      'rc_path': rc_libexecdir,
+    }
+  )
+endif
 
 meson.add_install_script('tools/meson_runlevels.sh',
   os,
@@ -223,6 +248,4 @@ meson.add_install_script('tools/meson_runlevels.sh',
   get_option('sysvinit') ? 'yes' : 'no')
 meson.add_install_script('tools/meson_final.sh',
   rc_libexecdir,
-  sbindir,
-  os,
-  get_option('sysvinit') ? 'yes' : 'no')
+  os)

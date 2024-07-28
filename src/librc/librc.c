@@ -259,6 +259,8 @@ detect_container(const char *systype RC_UNUSED)
 		       return NULL;
 		if (strcmp(systype, RC_SYS_JAIL) == 0)
 			return RC_SYS_JAIL;
+		if (strcmp(systype, RC_SYS_PODMAN) == 0)
+			return RC_SYS_PODMAN;
 	}
 
 	int jailed = 0;
@@ -267,6 +269,9 @@ detect_container(const char *systype RC_UNUSED)
 	if (sysctlbyname("security.jail.jailed", &jailed, &len, NULL, 0) == 0)
 		if (jailed == 1)
 			return RC_SYS_JAIL;
+
+	if (exists("/var/run/.containerenv"))
+		return RC_SYS_PODMAN;
 #endif
 
 #ifdef __linux__
@@ -287,6 +292,8 @@ detect_container(const char *systype RC_UNUSED)
 				return RC_SYS_SYSTEMD_NSPAWN;
 		if (strcmp(systype, RC_SYS_DOCKER) == 0)
 				return RC_SYS_DOCKER;
+		if (strcmp(systype, RC_SYS_PODMAN) == 0)
+			return RC_SYS_PODMAN;
 	}
 	if (file_regex("/proc/cpuinfo", "UML"))
 		return RC_SYS_UML;
@@ -304,6 +311,8 @@ detect_container(const char *systype RC_UNUSED)
 		return RC_SYS_RKT;
 	else if (file_regex("/proc/1/environ", "container=systemd-nspawn"))
 		return RC_SYS_SYSTEMD_NSPAWN;
+	else if (exists("/run/.containerenv"))
+		return RC_SYS_PODMAN;
 	else if (exists("/.dockerenv"))
 		return RC_SYS_DOCKER;
 	/* old test, I'm not sure when this was valid. */

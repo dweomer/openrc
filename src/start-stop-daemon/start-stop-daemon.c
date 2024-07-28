@@ -31,6 +31,7 @@
 #include <getopt.h>
 #include <limits.h>
 #include <grp.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <sched.h>
 #include <signal.h>
@@ -39,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -358,6 +360,8 @@ int main(int argc, char **argv)
 	signal_setup(SIGINT, handle_signal);
 	signal_setup(SIGQUIT, handle_signal);
 	signal_setup(SIGTERM, handle_signal);
+
+	openlog(applet, LOG_PID, LOG_DAEMON);
 
 	if ((tmp = getenv("SSD_NICELEVEL")))
 		if (sscanf(tmp, "%d", &nicelevel) != 1)
@@ -1123,7 +1127,7 @@ int main(int argc, char **argv)
 			if (sched_prio == -1)
 				sched.sched_priority = sched_get_priority_min(scheduler_index);
 
-			if (sched_setscheduler(mypid, scheduler_index, &sched))
+			if (pthread_setschedparam(pthread_self(), scheduler_index, &sched))
 				eerrorx("Failed to set scheduler: %s", strerror(errno));
 		} else if (sched_prio != -1) {
 			const struct sched_param sched =  {.sched_priority = sched_prio};
