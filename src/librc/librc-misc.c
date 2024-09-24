@@ -102,30 +102,6 @@ rc_getfile(const char *file, char **buffer, size_t *len)
 	return ret;
 }
 
-ssize_t
-rc_getline(char **line, size_t *len, FILE *fp)
-{
-	char *p;
-	size_t last = 0;
-
-	while (!feof(fp)) {
-		if (*line == NULL || last != 0) {
-			*len += BUFSIZ;
-			*line = xrealloc(*line, *len);
-		}
-		p = *line + last;
-		memset(p, 0, BUFSIZ);
-		if (fgets(p, BUFSIZ, fp) == NULL)
-			break;
-		last += strlen(p);
-		if (last && (*line)[last - 1] == '\n') {
-			(*line)[last - 1] = '\0';
-			break;
-		}
-	}
-	return last;
-}
-
 char *
 rc_proc_getent(const char *ent RC_UNUSED)
 {
@@ -133,7 +109,6 @@ rc_proc_getent(const char *ent RC_UNUSED)
 	FILE *fp;
 	char *proc = NULL, *p, *value = NULL, *save;
 	size_t i, len;
-	ssize_t size;
 
 	if (!exists("/proc/cmdline"))
 		return NULL;
@@ -142,11 +117,10 @@ rc_proc_getent(const char *ent RC_UNUSED)
 		return NULL;
 
 	i = 0;
-	if ((size = getline(&proc, &i, fp)) == -1) {
+	if (xgetline(&proc, &i, fp) == -1) {
 		free(proc);
 		return NULL;
 	}
-	proc[size - 1] = '\0';
 	save = proc;
 
 	len = strlen(ent);
@@ -184,7 +158,7 @@ rc_config_list(const char *file)
 	if (!(fp = fopen(file, "r")))
 		return list;
 
-	while ((rc_getline(&buffer, &len, fp))) {
+	while (xgetline(&buffer, &len, fp) != -1) {
 		p = buffer;
 		/* Strip leading spaces/tabs */
 		while ((*p == ' ') || (*p == '\t'))

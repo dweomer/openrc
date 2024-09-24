@@ -26,15 +26,6 @@ Why: Obsolete or replaced by other options.
 
 Who:
 
-# runscript and rc symbolic links
-
-When: 1.0
-
-Why: Deprecated in favor of openrc-run and openrc due to naming
-	 conflicts with other software.
-
-Who:
-
 # support for the opts variable in service scripts
 
 When: 1.0
@@ -67,13 +58,3 @@ Who:
 If you have a c program that links to librc and uses functions from
 there, this section will list API functions which are deprecated and
 will be removed along with the reason they are being removed.
-
-## rc_getline()
-
-When: 1.0
-
-Why: The getline() function was standardized in POSIX.1-2008, so it
-	 should be available on POSIX systems.
-
-Who:
-
