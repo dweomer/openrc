@@ -35,6 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <inttypes.h>
 
 #if defined(__linux__) || (defined(__FreeBSD_kernel__) && defined(__GLIBC__)) \
 	|| defined(__GNU__)
@@ -50,16 +51,14 @@
 #include "rc.h"
 #include "rc_exec.h"
 #include "misc.h"
+#include "timeutils.h"
 #include "plugin.h"
 #include "selinux.h"
 #include "_usage.h"
 #include "helpers.h"
 
-#define WAIT_INTERVAL	20000000	/* usecs to poll the lock file */
 #define WAIT_TIMEOUT	60		/* seconds until we timeout */
 #define WARN_TIMEOUT	10		/* warn about this every N seconds */
-
-static const struct timespec interval = { .tv_nsec = WAIT_INTERVAL };
 
 const char *applet = NULL;
 const char *extraopts = "stop | start | restart | status | describe | zap";
@@ -93,7 +92,8 @@ static RC_STRINGLIST *use_services;
 static RC_STRINGLIST *want_services;
 static RC_HOOK hook_out;
 static int exclusive_fd = -1, master_tty = -1;
-static bool sighup, skip_mark, in_background, deps, dry_run;
+static bool in_background, deps, dry_run;
+static volatile bool sighup, skip_mark, timedout;
 static pid_t service_pid;
 static int signal_pipe[2] = { -1, -1 };
 
@@ -156,6 +156,10 @@ handle_signal(int sig)
 		exit(EXIT_FAILURE);
 		/* NOTREACHED */
 
+	case SIGALRM:
+		timedout = true;
+		break;
+
 	default:
 		eerror("%s: caught unknown signal %d", applet, sig);
 	}
@@ -167,12 +171,8 @@ handle_signal(int sig)
 static void
 unhotplug(void)
 {
-	char *file = NULL;
-
-	xasprintf(&file, "%s/hotplugged/%s", rc_svcdir(), applet);
-	if (exists(file) && unlink(file) != 0)
-		eerror("%s: unlink `%s': %s", applet, file, strerror(errno));
-	free(file);
+	if (unlinkat(rc_dirfd(RC_DIR_HOTPLUGGED), applet, 0) != 0 && errno != ENOENT)
+		eerror("%s: unlink '%s/hotplugged/%s': %s", applet, rc_svcdir(), applet, strerror(errno));
 }
 
 static void
@@ -286,7 +286,6 @@ write_prefix(const char *buffer, size_t bytes, bool *prefixed)
 	size_t i, j;
 	const char *ec = ecolor(ECOLOR_HILITE);
 	const char *ec_normal = ecolor(ECOLOR_NORMAL);
-	char *prefix_lock;
 	ssize_t ret = 0;
 	int fd = fileno(stdout), lock_fd = -1;
 
@@ -294,9 +293,7 @@ write_prefix(const char *buffer, size_t bytes, bool *prefixed)
 	 * Lock the prefix.
 	 * open() may fail here when running as user, as RC_SVCDIR may not be writable.
 	 */
-	xasprintf(&prefix_lock, "%s/prefix.lock", rc_svcdir());
-	lock_fd = open(prefix_lock, O_WRONLY | O_CREAT, 0664);
-	free(prefix_lock);
+	lock_fd = openat(rc_dirfd(RC_DIR_SVCDIR), "prefix.lock", O_WRONLY | O_CREAT, 0664);
 
 	if (lock_fd != -1) {
 		while (flock(lock_fd, LOCK_EX) != 0) {
@@ -360,16 +357,15 @@ svc_exec(const char *arg1, const char *arg2)
 	int flags = 0;
 	struct pollfd fd[2];
 	int s;
-	char *buffer;
+	char buffer[BUFSIZ];
 	size_t bytes;
 	bool prefixed = false;
 	int slave_tty;
 	sigset_t sigchldmask;
 	sigset_t oldmask;
-	struct timespec timeout = { .tv_sec = WAIT_TIMEOUT };
-	struct timespec warn = { .tv_sec = WARN_TIMEOUT };
+	int64_t wait_timeout, warn_timeout, now;
 	RC_STRINGLIST *keywords;
-	bool forever;
+	bool forever = false;
 
 	keywords = rc_deptree_depend(deptree, applet, "keyword");
 	if (rc_stringlist_find(keywords, "-timeout") ||
@@ -403,6 +399,9 @@ svc_exec(const char *arg1, const char *arg2)
 			fcntl(slave_tty, F_SETFD, flags | FD_CLOEXEC);
 	}
 
+	now = tm_now();
+	wait_timeout = now + (WAIT_TIMEOUT * 1000);
+	warn_timeout = now + (WARN_TIMEOUT * 1000);
 	service_pid = fork();
 	if (service_pid == -1)
 		eerrorx("%s: fork: %s", applet, strerror(errno));
@@ -423,60 +422,61 @@ svc_exec(const char *arg1, const char *arg2)
 		/* UNREACHABLE */
 	}
 
-	buffer = xmalloc(sizeof(char) * BUFSIZ);
 	fd[0].fd = signal_pipe[0];
+	fd[1].fd = master_tty;
 	fd[0].events = fd[1].events = POLLIN;
 	fd[0].revents = fd[1].revents = 0;
-	if (master_tty >= 0) {
-		fd[1].fd = master_tty;
-		fd[1].events = POLLIN;
-		fd[1].revents = 0;
-	}
 
 	for (;;) {
-		if ((s = poll(fd, master_tty >= 0 ? 2 : 1, WAIT_INTERVAL / 1000000)) == -1) {
+		int timeout;
+		if (forever) {
+			timeout = -1;
+		} else if ((timeout = warn_timeout - tm_now()) < 0) {
+			timeout = 0;
+		}
+
+		if (poll(fd, master_tty >= 0 ? 2 : 1, timeout) == -1) {
 			if (errno != EINTR) {
 				eerror("%s: poll: %s", applet, strerror(errno));
 				ret = -1;
 				break;
 			}
+			continue;
 		}
 
-		if (s == 0 && !forever) {
-			timespecsub(&timeout, &interval, &timeout);
-			if (timeout.tv_sec <= 0) {
-				kill(service_pid, SIGKILL);
+		if (fd[1].revents & (POLLIN | POLLHUP)) {
+			bytes = read(master_tty, buffer, BUFSIZ);
+			write_prefix(buffer, bytes, &prefixed);
+		}
+
+		/* signal_pipe receives service_pid's exit status */
+		if (fd[0].revents & (POLLIN | POLLHUP)) {
+			if ((s = read(signal_pipe[0], &ret, sizeof(ret))) != sizeof(ret)) {
+				eerror("%s: receive failed: %s", applet, s < 0 ? strerror(errno) : "short read");
 				ret = -1;
 				break;
 			}
-			timespecsub(&warn, &interval, &warn);
-			if (warn.tv_sec <= 0) {
-				ewarn("%s: waiting for service (%d seconds)", applet, (int)timeout.tv_sec);
-				warn = (struct timespec) { .tv_sec = WARN_TIMEOUT };
-			}
-		} else if (s > 0) {
-			if (fd[1].revents & (POLLIN | POLLHUP)) {
-				bytes = read(master_tty, buffer, BUFSIZ);
-				write_prefix(buffer, bytes, &prefixed);
-			}
+			ret = WEXITSTATUS(ret);
+			if (ret != 0 && errno == ECHILD)
+				/* killall5 -9 could cause this */
+				ret = 0;
+			break;
+		}
 
-			/* signal_pipe receives service_pid's exit status */
-			if (fd[0].revents & (POLLIN | POLLHUP)) {
-				if ((s = read(signal_pipe[0], &ret, sizeof(ret))) != sizeof(ret)) {
-					eerror("%s: receive failed: %s", applet, s < 0 ? strerror(errno) : "short read");
-					ret = -1;
-					break;
-				}
-				ret = WEXITSTATUS(ret);
-				if (ret != 0 && errno == ECHILD)
-					/* killall5 -9 could cause this */
-					ret = 0;
-				break;
-			}
+		if (forever)
+			continue;
+
+		if ((now = tm_now()) >= wait_timeout) {
+			kill(service_pid, SIGKILL);
+			ret = -1;
+			break;
+		} else if (now >= warn_timeout) {
+			/* the timer might get off by a few ms, add 500ms so we get round numbers matching svc_wait. */
+			ewarn("%s: waiting for service (%"PRId64" seconds)", applet, (wait_timeout - now + 500) / 1000);
+			if ((warn_timeout += (WARN_TIMEOUT * 1000)) > wait_timeout)
+				warn_timeout = wait_timeout;
 		}
 	}
-
-	free(buffer);
 
 	sigemptyset (&sigchldmask);
 	sigaddset (&sigchldmask, SIGCHLD);
@@ -503,65 +503,47 @@ svc_exec(const char *arg1, const char *arg2)
 static bool
 svc_wait(const char *svc)
 {
-	char *file = NULL;
 	int fd;
 	bool forever = false;
 	RC_STRINGLIST *keywords;
-	struct timespec timeout, warn;
+	const char *base = basename_c(svc);
+	int timeout = WAIT_TIMEOUT;
+	bool retval = false;
 
 	/* Some services don't have a timeout, like fsck */
 	keywords = rc_deptree_depend(deptree, svc, "keyword");
-	if (rc_stringlist_find(keywords, "-timeout") ||
-	    rc_stringlist_find(keywords, "notimeout"))
+	if (rc_stringlist_find(keywords, "-timeout") || rc_stringlist_find(keywords, "notimeout"))
 		forever = true;
 	rc_stringlist_free(keywords);
 
-	xasprintf(&file, "%s/exclusive/%s", rc_svcdir(), basename_c(svc));
+	if ((fd = openat(rc_dirfd(RC_DIR_EXCLUSIVE), base, O_RDONLY | O_NONBLOCK)) == -1)
+		return errno == ENOENT;
 
-	timeout.tv_sec = WAIT_TIMEOUT;
-	timeout.tv_nsec = 0;
-	warn.tv_sec = WARN_TIMEOUT;
-	warn.tv_nsec = 0;
+	timedout = false;
 	for (;;) {
-		fd = open(file, O_RDONLY | O_NONBLOCK);
-		if (fd != -1) {
-			if (flock(fd, LOCK_SH | LOCK_NB) == 0) {
-				close(fd);
-				free(file);
-				return true;
-			}
-			close(fd);
+		if (!forever)
+			alarm(WARN_TIMEOUT);
+
+		if (flock(fd, LOCK_SH) == 0) {
+			retval = true;
+			break;
 		}
-		if (errno == ENOENT) {
-			free(file);
-			return true;
-		}
-		if (errno != EWOULDBLOCK) {
-			eerror("%s: open `%s': %s", applet, file,
-			    strerror(errno));
-			free(file);
-			exit(EXIT_FAILURE);
-		}
-		if (nanosleep(&interval, NULL) == -1) {
-			if (errno != EINTR)
-				goto finish;
-		}
-		if (!forever) {
-			timespecsub(&timeout, &interval, &timeout);
-			if (timeout.tv_sec <= 0)
-				goto finish;
-			timespecsub(&warn, &interval, &warn);
-			if (warn.tv_sec <= 0) {
-				ewarn("%s: waiting for %s (%d seconds)",
-				    applet, svc, (int)timeout.tv_sec);
-				warn.tv_sec = WARN_TIMEOUT;
-				warn.tv_nsec = 0;
-			}
+
+		if (errno != EINTR)
+			break;
+
+		if (!forever && timedout) {
+			timedout = false;
+			if ((timeout -= WARN_TIMEOUT) > 0)
+				ewarn("%s: waiting for %s (%d seconds)", applet, base, timeout);
+			else
+				break;
 		}
 	}
-finish:
-	free(file);
-	return false;
+
+	alarm(0);
+	close(fd);
+	return retval;
 }
 
 static void
@@ -1250,6 +1232,7 @@ int main(int argc, char **argv)
 
 	/* Setup a signal handler */
 	signal_setup(SIGHUP, handle_signal);
+	signal_setup(SIGALRM, handle_signal);
 	signal_setup(SIGUSR1, handle_signal);
 	signal_setup(SIGINT, handle_signal);
 	signal_setup(SIGQUIT, handle_signal);
