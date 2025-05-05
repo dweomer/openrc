@@ -171,6 +171,7 @@ const char * const longopts_help[] = {
 	"Print dots each second while waiting",
 	"Set process scheduler",
 	"Set process scheduler priority",
+	"Configures experimental notification behaviour",
 	longopts_help_COMMON
 };
 const char *usagestring = NULL;
@@ -1118,8 +1119,10 @@ int main(int argc, char **argv)
 		cloexec_fds_from(3);
 
 		if (notify.type == NOTIFY_FD) {
-			if (close(notify.pipe[0]) == -1 || dup2(notify.pipe[1], notify.fd) == -1)
-				eerrorx("Failed to initialize notify fd.");
+			if (close(notify.pipe[0]) == -1)
+				eerrorx("%s: failed to close notify pipe[0]: %s", applet, strerror(errno));
+			if (dup2(notify.pipe[1], notify.fd) == -1)
+				eerrorx("%s: failed to initialize notify fd: %s", applet, strerror(errno));
 		}
 
 		if (scheduler != NULL) {

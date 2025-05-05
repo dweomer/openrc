@@ -2,13 +2,18 @@
 
 . @LIBEXECDIR@/sh/functions.sh
 
+if [ -z "${XDG_RUNTIME_DIR}" ]; then
+	logger -p daemon.err "XDG_RUNTIME_DIR unset, user services cannot start."
+	exit 1
+fi
+
 sysconfdir="${XDG_CONFIG_HOME:-${HOME}/.config}/rc"
 cachedir="${XDG_CACHE_HOME:-${HOME}/.cache}/rc"
 svcdir="${XDG_RUNTIME_DIR?}/openrc"
 
 for config in "@SYSCONFDIR@/rc.conf" "$sysconfdir/rc.conf"; do
 	if [ -e "$config" ] && ! . "$config"; then
-		eerror "openrc-user: Failed loading $config"
+		logger -p daemon.err "openrc-user: Failed loading $config"
 		exit 1
 	fi
 done
@@ -31,5 +36,5 @@ case $1 in
 		cp -pr "$svcdir"/dep* "$svcdir/init.d" "$svcdir/conf.d" "$cachedir" 2>/dev/null
 		exec openrc --user shutdown
 		;;
-	*) eerror "no argument given to $0" && exit 1
+	*) logger -p daemon.err "no argument given to $0" && exit 1
 esac
