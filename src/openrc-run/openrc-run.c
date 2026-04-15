@@ -394,7 +394,7 @@ svc_exec(const char *command)
 	if (env.count)
 		rc_environ_export(&env, (const char *const *) environ, &envp);
 
-	einfov("Executing: %s %s %s", openrc_sh, service, command);
+	einfov("Executing: %s %s %s", argv[0], service, command);
 	if ((errno = posix_spawn(&service_pid, argv[0], &tty, NULL, UNCONST(argv), envp ? UNCONST(envp) : environ)))
 		eerrorx("%s: exec '%s': %s", service, argv[0], strerror(errno));
 
