@@ -346,7 +346,7 @@ svc_exec(const char *command)
 	int slave_tty;
 	sigset_t sigchldmask;
 	sigset_t oldmask;
-	char *openrc_sh;
+	char *openrc_sh = NULL;
 	const char **envp = NULL;
 	const char *argv[] = {
 		RC_LIBEXECDIR "/sh/openrc-run.sh",
@@ -399,6 +399,7 @@ svc_exec(const char *command)
 		eerrorx("%s: exec '%s': %s", service, argv[0], strerror(errno));
 
 	posix_spawn_file_actions_destroy(&tty);
+	free(openrc_sh);
 	free(envp);
 
 	fd[0].fd = signal_pipe[0];
