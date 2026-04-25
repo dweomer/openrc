@@ -668,7 +668,7 @@ svc_start_deps(void)
 
 		/* Don't wait for services which went inactive but are
 		 * now in starting state which we are after */
-		if (state & (RC_SERVICE_STARTING | RC_SERVICE_WASINACTIVE))
+		if (state & RC_SERVICE_STARTING && state & RC_SERVICE_WASINACTIVE)
 		{
 			if (!rc_stringlist_find(need_services, svc->value) &&
 					!rc_stringlist_find(want_services, svc->value) &&
@@ -830,7 +830,7 @@ svc_stop_check(RC_SERVICE *state)
 	if (rc_runlevel_stopping() && *state & RC_SERVICE_FAILED)
 		exit(EXIT_FAILURE);
 
-	if (in_background && !(*state & (RC_SERVICE_STARTED | RC_SERVICE_INACTIVE)))
+	if (in_background && !(*state & (RC_SERVICE_STARTED) && !(*state & RC_SERVICE_INACTIVE)))
 		exit(EXIT_FAILURE);
 
 	if (*state & RC_SERVICE_STOPPED) {
